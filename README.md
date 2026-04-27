@@ -176,12 +176,3 @@ Outputs:
 
 ---
 
-## 👩‍💻 Author
-
-**Rachana N**
-
----
-
-## ⭐ If you found this useful
-
-Consider giving a ⭐ to the repository!
