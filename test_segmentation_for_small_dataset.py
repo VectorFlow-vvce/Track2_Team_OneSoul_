@@ -1,9 +1,9 @@
 """
-CPU SPEED-RUN TEST SCRIPT (MATCHES TRAINING)
+CPU SPEED-RUN TEST SCRIPT (FINAL)
 
-- Uses cached DINOv2 features (NO backbone here)
-- Uses FastSegHead (same as training)
-- Fast CPU evaluation
+- Matches training (cached features + FastSegHead)
+- Computes IoU + mAP@50
+- CPU friendly
 """
 
 import torch
@@ -58,7 +58,6 @@ class FastSegHead(nn.Module):
         x = x.reshape(B, self.H, self.W, C).permute(0, 3, 1, 2)
         return self.net(x)
 
-
 # ─────────────────────────────────────────────────────────────
 # DATASET (CACHED FEATURES)
 # ─────────────────────────────────────────────────────────────
@@ -77,14 +76,12 @@ class CachedFeatureDataset(Dataset):
         feat = self.features[idx]   # (N, C)
         mask = self.masks[idx]      # (H, W)
 
-        # Resize mask to token grid
         mask = torch.from_numpy(
             np.array(Image.fromarray(mask).resize(
                 (TOKEN_W, TOKEN_H), Image.NEAREST))
         ).long()
 
         return feat, mask
-
 
 # ─────────────────────────────────────────────────────────────
 # METRICS
@@ -111,6 +108,33 @@ def compute_iou(pred_logits, target, n_classes=N_CLASSES):
     return mean_iou, per_class
 
 
+def compute_map50(pred_logits, target, num_classes=N_CLASSES):
+    """
+    Segmentation mAP@50:
+    IoU >= 0.5 → counted as correct (AP=1)
+    """
+
+    pred = torch.argmax(pred_logits, dim=1)
+
+    ap_per_class = []
+
+    for c in range(num_classes):
+        pred_c   = (pred == c)
+        target_c = (target == c)
+
+        inter = (pred_c & target_c).sum().float()
+        union = (pred_c | target_c).sum().float()
+
+        if union > 0:
+            iou = (inter / union).item()
+            ap  = 1.0 if iou >= 0.5 else 0.0
+            ap_per_class.append(ap)
+        else:
+            ap_per_class.append(np.nan)
+
+    map50 = float(np.nanmean(ap_per_class))
+    return map50, ap_per_class
+
 # ─────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────
@@ -126,20 +150,20 @@ def main():
     device = torch.device('cpu')
     print(f"Device: {device}")
 
-    # ── Load dataset ──────────────────────────────────────────
+    # Load dataset
     dataset = CachedFeatureDataset(args.cache_path)
     loader  = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
     print(f"Loaded {len(dataset)} samples")
 
-    # ── Get embedding dimension ───────────────────────────────
+    # Get embedding dim
     with open(args.cache_path, 'rb') as f:
         sample = pickle.load(f)
 
     n_embed = sample['features'][0].shape[1]
     print(f"Embedding dim: {n_embed}")
 
-    # ── Load model ────────────────────────────────────────────
+    # Load model
     model = FastSegHead(
         in_channels=n_embed,
         n_classes=N_CLASSES,
@@ -147,18 +171,23 @@ def main():
         token_w=TOKEN_W
     )
 
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
-    model.to(device).eval()
+    # safer load (removes warning)
+    state_dict = torch.load(args.model_path, map_location=device)
+    model.load_state_dict(state_dict)
 
+    model.to(device).eval()
     print("Model loaded successfully!")
 
-    # ── Optional output dir ───────────────────────────────────
+    # Output dir
     if args.save_preds:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    # ── Evaluation ────────────────────────────────────────────
+    # Evaluation
     all_ious = []
+    all_map50 = []
+
     class_ious_accum = []
+    class_ap50_accum = []
 
     print("\nRunning evaluation...\n")
 
@@ -168,12 +197,16 @@ def main():
 
             logits = model(feats)
 
-            mean_iou, per_class = compute_iou(logits, masks)
+            mean_iou, per_class_iou = compute_iou(logits, masks)
+            map50, per_class_ap50   = compute_map50(logits, masks)
 
             all_ious.append(mean_iou)
-            class_ious_accum.append(per_class)
+            all_map50.append(map50)
 
-            # Optional: save predictions
+            class_ious_accum.append(per_class_iou)
+            class_ap50_accum.append(per_class_ap50)
+
+            # Save predictions (optional)
             if args.save_preds:
                 preds = torch.argmax(logits, dim=1)
 
@@ -184,23 +217,31 @@ def main():
                         os.path.join(args.output_dir, f"pred_{idx}_{b}.png")
                     )
 
-    # ── Final metrics ─────────────────────────────────────────
-    mean_iou = float(np.mean(all_ious))
-    class_ious = np.nanmean(class_ious_accum, axis=0)
+    # Final metrics
+    mean_iou   = float(np.mean(all_ious))
+    mean_map50 = float(np.mean(all_map50))
+
+    class_ious = np.nan_to_num(np.nanmean(class_ious_accum, axis=0), nan=0.0)
+    class_ap50 = np.nan_to_num(np.nanmean(class_ap50_accum, axis=0), nan=0.0)
 
     print("\n" + "="*50)
     print("FINAL RESULTS")
     print("="*50)
-    print(f"Mean IoU: {mean_iou:.4f}")
+
+    print(f"Mean IoU : {mean_iou:.4f}")
+    print(f"mAP@50   : {mean_map50:.4f}")
+
     print("="*50)
 
     print("\nPer-Class IoU:")
     for name, iou in zip(class_names, class_ious):
-        iou_str = f"{iou:.4f}" if not np.isnan(iou) else "N/A"
-        print(f"{name:<20}: {iou_str}")
+        print(f"{name:<20}: {iou:.4f}")
+
+    print("\nPer-Class AP50:")
+    for name, ap in zip(class_names, class_ap50):
+        print(f"{name:<20}: {ap:.2f}")
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()
