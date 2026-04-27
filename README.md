@@ -134,6 +134,7 @@ python train_segmentation.py
 * Target IoU: **0.70+**
 * Fast CPU Mode: **0.55 – 0.65 (within ~30–60 mins)**
 <img width="1600" height="526" alt="image" src="https://github.com/user-attachments/assets/8d5a8c86-f7f5-4bc6-bd97-9a88815ef6fc" />
+<img width="457" height="342" alt="image" src="https://github.com/user-attachments/assets/ba169bc5-3a69-47a9-a72b-acba3727cae5" />
 
 ---
 
