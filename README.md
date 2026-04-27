@@ -133,6 +133,7 @@ python train_segmentation.py
 * Expected 0.55 – 0.60+ IoU with 30–40 epochs*
 * Target IoU: **0.70+**
 * Fast CPU Mode: **0.55 – 0.65 (within ~30–60 mins)**
+<img width="1600" height="526" alt="image" src="https://github.com/user-attachments/assets/8d5a8c86-f7f5-4bc6-bd97-9a88815ef6fc" />
 
 ---
 
